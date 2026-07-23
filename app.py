@@ -207,14 +207,20 @@ class H(BaseHTTPRequestHandler):
             self._send(200, f"rasa-rerank-brain — chaine : {n}", "text/plain; charset=utf-8")
 
     def do_POST(self):
-        if self.path.rstrip("/") != "/rerank":
-            self._send(404, {"error": "not found"})
-            return
+        path = self.path.rstrip("/")
         try:
             n = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(n) or b"{}")
         except Exception:
             self._send(400, {"error": "bad json"})
+            return
+        # Pont Anthropic -> OVH : RASA (search_nl) parle le format Messages d'Anthropic.
+        # On traduit vers OVH (OpenAI-compat) et on repond au format Anthropic.
+        if path in ("/v1/messages", "/anthropic/v1/messages"):
+            self._anthropic_bridge(body)
+            return
+        if path != "/rerank":
+            self._send(404, {"error": "not found"})
             return
         q = body.get("query", "")
         cand = body.get("candidates", []) or []
@@ -225,6 +231,57 @@ class H(BaseHTTPRequestHandler):
             self._send(503, {"error": "aucun cerveau disponible", "detail": info})
             return
         self._send(200, {"scores": scores, "via": info})
+
+    def _anthropic_bridge(self, body):
+        ovh = next((b for b in BRAINS if b["kind"] == "openai"), None)
+        if not ovh:
+            self._send(503, {"type": "error", "error": {"type": "api_error",
+                        "message": "aucun backend OVH configure"}})
+            return
+        msgs = _anthropic_to_openai(body)
+        max_tokens = int(body.get("max_tokens") or 1500)
+        temp = float(body.get("temperature") if body.get("temperature") is not None else 0.2)
+        try:
+            d = _post(f"{ovh['url']}/chat/completions",
+                      {"model": ovh["model"], "messages": msgs,
+                       "max_tokens": max_tokens, "temperature": temp},
+                      {"Authorization": f"Bearer {ovh['key']}"}, max(TIMEOUT, 30))
+            m = d["choices"][0]["message"]
+            text = m.get("content") or m.get("reasoning_content") or ""
+            usage = d.get("usage", {})
+        except Exception as e:
+            print(f"[bridge] echec OVH: {type(e).__name__}", flush=True)
+            self._send(502, {"type": "error", "error": {"type": "api_error",
+                        "message": f"OVH: {type(e).__name__}"}})
+            return
+        print(f"[bridge] n_msgs={len(msgs)} -> OVH ok ({len(text)} car.)", flush=True)
+        self._send(200, {
+            "id": "msg_bridge", "type": "message", "role": "assistant",
+            "model": body.get("model", ovh["model"]),
+            "content": [{"type": "text", "text": text}],
+            "stop_reason": "end_turn", "stop_sequence": None,
+            "usage": {"input_tokens": int(usage.get("prompt_tokens", 0)),
+                      "output_tokens": int(usage.get("completion_tokens", 0))},
+        })
+
+
+def _content_to_text(c):
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "\n".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+    return str(c)
+
+
+def _anthropic_to_openai(body):
+    """Traduit un corps Anthropic Messages en messages OpenAI."""
+    msgs = []
+    sysp = body.get("system")
+    if sysp:
+        msgs.append({"role": "system", "content": _content_to_text(sysp)})
+    for m in body.get("messages", []):
+        msgs.append({"role": m.get("role", "user"), "content": _content_to_text(m.get("content", ""))})
+    return msgs
 
 
 def _selftest():
