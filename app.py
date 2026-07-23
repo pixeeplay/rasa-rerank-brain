@@ -127,6 +127,21 @@ def _parse_order(txt, k):
     return order
 
 
+def _alive(b, timeout=1.5):
+    """Ping rapide : evite qu'un cerveau mort (Mac eteint) brule tout le delai
+    avant le repli. Un cerveau injoignable est ecarte en ~1,5 s."""
+    try:
+        if b["kind"] == "ollama":
+            urllib.request.urlopen(f"{b['url']}/api/tags", timeout=timeout).read()
+        else:
+            req = urllib.request.Request(f"{b['url']}/models",
+                                         headers={"Authorization": f"Bearer {b['key']}"})
+            urllib.request.urlopen(req, timeout=timeout).read()
+        return True
+    except Exception:
+        return False
+
+
 def rerank(query, cands):
     k = len(cands)
     if k == 0:
@@ -134,6 +149,9 @@ def rerank(query, cands):
     prompt = _prompt(query, cands)
     last = "aucun cerveau configure"
     for b in BRAINS:
+        if not _alive(b):
+            last = f"{b['name']}: hors ligne"
+            continue
         try:
             txt = _ask_openai(b, prompt) if b["kind"] == "openai" else _ask_ollama(b, prompt)
             order = _parse_order(txt, k)
