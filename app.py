@@ -47,7 +47,12 @@ def _load_brains():
         key = os.environ.get("RASA_OVH_AI_KEY", "")
         model = os.environ.get("RASA_OVH_AI_MODEL", "gpt-oss-120b")
         if key:
-            out.append({"name": "ovh", "url": base, "model": model, "kind": "openai", "key": key})
+            ovh = {"name": "ovh", "url": base, "model": model, "kind": "openai", "key": key}
+            # OVH_FIRST=1 -> OVH en tete (les Mac ne sont essayes qu'en secours)
+            if os.environ.get("OVH_FIRST", "0").strip() in ("1", "true", "yes"):
+                out.insert(0, ovh)
+            else:
+                out.append(ovh)
     return out
 
 
@@ -211,7 +216,11 @@ class H(BaseHTTPRequestHandler):
         except Exception:
             self._send(400, {"error": "bad json"})
             return
-        scores, info = rerank(body.get("query", ""), body.get("candidates", []) or [])
+        q = body.get("query", "")
+        cand = body.get("candidates", []) or []
+        scores, info = rerank(q, cand)
+        print(f"[rerank] q={q[:60]!r} n={len(cand)} -> via={info} ok={scores is not None}",
+              flush=True)
         if scores is None:
             self._send(503, {"error": "aucun cerveau disponible", "detail": info})
             return
