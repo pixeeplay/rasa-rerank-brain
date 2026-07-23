@@ -200,7 +200,22 @@ class H(BaseHTTPRequestHandler):
         self._send(200, {"scores": scores, "via": info})
 
 
+def _selftest():
+    for b in BRAINS:
+        try:
+            if b["kind"] == "ollama":
+                urllib.request.urlopen(f"{b['url']}/api/tags", timeout=8).read()
+            else:
+                req = urllib.request.Request(f"{b['url']}/models",
+                                             headers={"Authorization": f"Bearer {b['key']}"})
+                urllib.request.urlopen(req, timeout=8).read()
+            print(f"[selftest] {b['name']} ({b['url']}) -> JOIGNABLE", flush=True)
+        except Exception as e:
+            print(f"[selftest] {b['name']} ({b['url']}) -> INJOIGNABLE ({type(e).__name__})", flush=True)
+
+
 if __name__ == "__main__":
     print(f"rasa-rerank-brain sur :{PORT} — chaine : "
           + ", ".join(f"{b['name']}={b['model']}" for b in BRAINS), flush=True)
+    _selftest()
     ThreadingHTTPServer(("0.0.0.0", PORT), H).serve_forever()
